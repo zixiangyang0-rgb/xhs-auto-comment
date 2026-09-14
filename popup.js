@@ -3,8 +3,20 @@
 'use strict';
 
 var STORAGE_KEY = 'xhs_auto_task';
+var STAT_KEY = 'xhs_auto_stats';
+var SENT_KEY = 'xhs_sent_daily';
 var POLL_INTERVAL = 1000; // 轮询间隔（毫秒）
 var XHS_HOST = 'www.xiaohongshu.com';
+
+// 固定策略（UI选项框已删除）：随机跳过15%，每5条休息60~180s，点赞+多样化常开；每日/每小时上限已移除
+var FIXED_GUARD = {
+  skipRate: 15,
+  restEvery: 5,
+  restMin: 60,
+  restMax: 180,
+  likeRate: 30,
+  diversify: true
+};
 
 // DOM 引用
 var elKeyword = document.getElementById('keyword');
@@ -12,14 +24,8 @@ var elComments = document.getElementById('comments');
 var elTargetCount = document.getElementById('targetCount');
 var elMinDelay = document.getElementById('minDelay');
 var elMaxDelay = document.getElementById('maxDelay');
-var elDailyMax = document.getElementById('dailyMax');
-var elHourlyMax = document.getElementById('hourlyMax');
-var elSkipRate = document.getElementById('skipRate');
-var elRestEvery = document.getElementById('restEvery');
-var elRestMin = document.getElementById('restMin');
-var elRestMax = document.getElementById('restMax');
-var elLikeRate = document.getElementById('likeRate');
-var elDiversify = document.getElementById('diversify');
+var elSentTodayText = document.getElementById('sentTodayText');
+var elClearSentBtn = document.getElementById('clearSentBtn');
 var elStartBtn = document.getElementById('startBtn');
 var elStopBtn = document.getElementById('stopBtn');
 var elStatusBadge = document.getElementById('statusBadge');
@@ -138,30 +144,6 @@ function fillForm(task) {
   if (typeof task.maxDelay === 'number') {
     elMaxDelay.value = task.maxDelay;
   }
-  if (typeof task.dailyMax === 'number' && elDailyMax) {
-    elDailyMax.value = task.dailyMax;
-  }
-  if (typeof task.hourlyMax === 'number' && elHourlyMax) {
-    elHourlyMax.value = task.hourlyMax;
-  }
-  if (typeof task.skipRate === 'number' && elSkipRate) {
-    elSkipRate.value = task.skipRate;
-  }
-  if (typeof task.restEvery === 'number' && elRestEvery) {
-    elRestEvery.value = task.restEvery;
-  }
-  if (typeof task.restMin === 'number' && elRestMin) {
-    elRestMin.value = task.restMin;
-  }
-  if (typeof task.restMax === 'number' && elRestMax) {
-    elRestMax.value = task.restMax;
-  }
-  if (elLikeRate) {
-    elLikeRate.checked = task.likeRate !== 0;
-  }
-  if (elDiversify) {
-    elDiversify.checked = task.diversify !== false;
-  }
 }
 
 // 校验表单，返回错误信息字符串（空串代表通过）
@@ -209,34 +191,24 @@ function onStart() {
   }
 
   var targetCount = toInt(elTargetCount.value, 5, 1, 30);
-  // 防封号：默认 30~90 秒，下限放开到 3 秒（用户自设，风险自负）
-  var minDelay = toInt(elMinDelay.value, 30, 3, 3600);
-  var maxDelay = toInt(elMaxDelay.value, 90, 3, 3600);
+  // 效率优先：最小延迟下限为 0（风险自负）
+  var minDelay = toInt(elMinDelay.value, 0, 0, 3600);
+  var maxDelay = toInt(elMaxDelay.value, 20, 0, 3600);
   if (maxDelay < minDelay) {
     maxDelay = minDelay;
   }
-  var dailyMax = elDailyMax ? toInt(elDailyMax.value, 20, 1, 50) : 20;
-  var hourlyMax = elHourlyMax ? toInt(elHourlyMax.value, 8, 1, 20) : 8;
-  var skipRate = elSkipRate ? toInt(elSkipRate.value, 15, 0, 50) : 15;
-  var restEvery = elRestEvery ? toInt(elRestEvery.value, 5, 0, 20) : 5;
-  var restMin = elRestMin ? toInt(elRestMin.value, 60, 30, 3600) : 60;
-  var restMax = elRestMax ? toInt(elRestMax.value, 180, 30, 3600) : 180;
-  if (restMax < restMin) {
-    restMax = restMin;
-  }
-  var likeOn = elLikeRate ? !!elLikeRate.checked : true;
-  var diversifyOn = elDiversify ? !!elDiversify.checked : true;
+  // 固定策略（选项框已删除，不再从表单读取；每日/每小时上限已移除）
+  var skipRate = FIXED_GUARD.skipRate;
+  var restEvery = FIXED_GUARD.restEvery;
+  var restMin = FIXED_GUARD.restMin;
+  var restMax = FIXED_GUARD.restMax;
+  var likeOn = true;
+  var diversifyOn = true;
 
   // 写回规范化的表单值
   elTargetCount.value = targetCount;
   elMinDelay.value = minDelay;
   elMaxDelay.value = maxDelay;
-  if (elDailyMax) elDailyMax.value = dailyMax;
-  if (elHourlyMax) elHourlyMax.value = hourlyMax;
-  if (elSkipRate) elSkipRate.value = skipRate;
-  if (elRestEvery) elRestEvery.value = restEvery;
-  if (elRestMin) elRestMin.value = restMin;
-  if (elRestMax) elRestMax.value = restMax;
 
   // 关键修复：新建任务必须清空旧 queue/currentIndex，否则二次启动复用旧队列
   var task = {
@@ -246,8 +218,6 @@ function onStart() {
     targetCount: targetCount,
     minDelay: minDelay,
     maxDelay: maxDelay,
-    dailyMax: dailyMax,
-    hourlyMax: hourlyMax,
     skipRate: skipRate,
     restEvery: restEvery,
     restMin: restMin,
@@ -258,7 +228,7 @@ function onStart() {
     queue: [],
     currentIndex: 0,
     failStreak: 0,
-    logs: ['任务已创建：关键词「' + keyword + '」，目标 ' + targetCount + ' 篇（防封：' + minDelay + '~' + maxDelay + 's/条，每日≤' + dailyMax + '）']
+    logs: ['任务已创建：关键词「' + keyword + '」，目标 ' + targetCount + ' 篇（间隔 ' + minDelay + '~' + maxDelay + 's/条）']
   };
 
   saveTask(task).then(function () {
@@ -320,10 +290,66 @@ function onStop() {
   });
 }
 
+// 当天已发送记录（防重复）：{ date: 'YYYY-MM-DD', ids: { noteId: { ts, url } } }
+function todayStr() {
+  var d = new Date();
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+}
+
+function getSentDaily() {
+  return new Promise(function (resolve) {
+    chrome.storage.local.get(SENT_KEY, function (result) {
+      var s = result[SENT_KEY] || null;
+      if (!s || s.date !== todayStr() || !s.ids) {
+        resolve({ date: todayStr(), ids: {} });
+      } else {
+        resolve(s);
+      }
+    });
+  });
+}
+
+function getStats() {
+  return new Promise(function (resolve) {
+    chrome.storage.local.get(STAT_KEY, function (result) {
+      var s = result[STAT_KEY] || null;
+      if (!s || s.date !== todayStr()) {
+        resolve({ date: todayStr(), count: 0, skip: 0, fail: 0 });
+      } else {
+        resolve(s);
+      }
+    });
+  });
+}
+
+function renderSent() {
+  Promise.all([getSentDaily(), getStats()]).then(function (arr) {
+    var sent = arr[0] || { ids: {} };
+    var st = arr[1] || {};
+    var n = Object.keys(sent.ids || {}).length;
+    var ok = st.count || 0;
+    var skip = st.skip || 0;
+    var fail = st.fail || 0;
+    if (elSentTodayText) {
+      elSentTodayText.textContent = '今日成功 ' + ok + ' · 跳过 ' + skip + ' · 失败 ' + fail + '（去重基数 ' + n + '）';
+    }
+  });
+}
+
+function onClearSent() {
+  var obj = {};
+  obj[SENT_KEY] = { date: todayStr(), ids: {} };
+  obj[STAT_KEY] = { date: todayStr(), count: 0, skip: 0, fail: 0, hours: {}, commented: {} };
+  chrome.storage.local.set(obj, function () {
+    renderSent();
+  });
+}
+
 // 轮询最新状态并刷新 UI
 function poll() {
   getTask().then(function (task) {
     renderState(task);
+    renderSent();
   });
 }
 
@@ -339,11 +365,15 @@ function init() {
   getTask().then(function (task) {
     fillForm(task);
     renderState(task);
+    renderSent();
     startPolling();
   });
 
   elStartBtn.addEventListener('click', onStart);
   elStopBtn.addEventListener('click', onStop);
+  if (elClearSentBtn) {
+    elClearSentBtn.addEventListener('click', onClearSent);
+  }
 
   // 关闭 popup 时清理定时器
   window.addEventListener('unload', function () {

@@ -4,11 +4,11 @@
  *
  * 状态机由 chrome.storage.local 的 xhs_auto_task 驱动：
  *   { running, keyword, comments[], targetCount, minDelay, maxDelay,
- *     dailyMax, hourlyMax, restEvery, restMin, restMax, skipRate, likeRate,
+ *     restEvery, restMin, restMax, skipRate, likeRate,
  *     diversify, doneCount, queue[], currentIndex, failStreak, logs[] }
  *
  * 防封号策略：
-  *   1) 间隔（默认 30~90s，下限 3s 用户自设）+ 每条随机抖动
+  *   1) 间隔（默认 0~20s，下限 0，效率优先风险自负）+ 每条随机抖动
  *   2) 每日/每小时上限熔断
  *   3) 每 N 条长休息
  *   4) 随机跳过（模拟真人挑选）
@@ -26,6 +26,8 @@
   // ---------- 常量 ----------
   var TASK_KEY = 'xhs_auto_task';
   var STAT_KEY = 'xhs_auto_stats';
+  var SENT_KEY = 'xhs_sent_daily';
+  var FLOAT_POS_KEY = 'xhs_float_pos';
   var NAV_KEY = '__xhs_auto_nav__';
 
   var EDITOR_SELECTORS = [
@@ -98,8 +100,8 @@
   var MAX_LOGS = 80;
   var MAX_FAIL_STREAK = 3;
 
-  // 评论多样化后缀（防重复文案检测）
-  var DIVERSIFY_SUFFIX = ['～', '呀', '呢', '哈', '✨', '~~', '！', '～～', '哦', '啦～'];
+  // 评论多样化后缀（防重复文案检测，零耗时）
+  var DIVERSIFY_SUFFIX = ['～', '呀', '呢', '哈', '✨', '~~', '！', '～～', '哦', '啦～', '~', '！!', '呀～', '呢～', '哈～', '👍', '❤️', '～✨', '啦', '哦～'];
 
   // ---------- 基础工具 ----------
   function sleep(ms) {
@@ -173,10 +175,8 @@
       keyword: '',
       comments: [],
       targetCount: 5,
-      minDelay: 30,
-      maxDelay: 90,
-      dailyMax: 20,
-      hourlyMax: 8,
+      minDelay: 0,
+      maxDelay: 20,
       restEvery: 5,
       restMin: 60,
       restMax: 180,
@@ -200,25 +200,34 @@
   function setTask(patch) {
     return storageGet([TASK_KEY]).then(function (d) {
       var next = Object.assign(defaults(), d[TASK_KEY] || {}, patch || {});
-      // 防御：间隔下限 3 秒（popup 已放开，用户自设风险自负）
-      if (next.minDelay < 3) next.minDelay = 3;
-      if (next.maxDelay < 3) next.maxDelay = 3;
+      // 效率优先：间隔下限 0（风险自负）
+      if (next.minDelay < 0) next.minDelay = 0;
+      if (next.maxDelay < 0) next.maxDelay = 0;
       if (next.maxDelay < next.minDelay) next.maxDelay = next.minDelay;
       var o = {}; o[TASK_KEY] = next;
       return storageSet(o).then(function () { return next; });
     });
   }
 
-  // 统计：每日/每小时计数 + 已评论 ID（24h 去重）
+  // 统计：成功计数 + 跳过/失败计数 + 每小时计数 + 已评论 ID（只计数展示，不做上限熔断）
   function getStats() {
     return storageGet([STAT_KEY]).then(function (d) {
       var s = d[STAT_KEY] || {};
       if (s.date !== todayStr()) {
-        s = { date: todayStr(), count: 0, hours: {}, commented: {} };
+        s = { date: todayStr(), count: 0, skip: 0, fail: 0, hours: {}, commented: {} };
       }
       if (!s.hours) s.hours = {};
       if (!s.commented) s.commented = {};
+      if (s.skip == null) s.skip = 0;
+      if (s.fail == null) s.fail = 0;
       return s;
+    });
+  }
+
+  function bumpCounter(field) {
+    return getStats().then(function (s) {
+      s[field] = (s[field] || 0) + 1;
+      return setStats(s);
     });
   }
 
@@ -241,30 +250,56 @@
           for (var i = 0; i < keys.length - 300; i++) delete s.commented[keys[i]];
         }
       }
-      return setStats(s).then(function () { return s; });
-    });
-  }
-
-  function checkQuota(task) {
-    return getStats().then(function (s) {
-      var h = hourStr();
-      if ((s.count || 0) >= (task.dailyMax || 20)) {
-        return { ok: false, reason: '已达每日上限（' + s.count + '/' + task.dailyMax + '），已自动停止' };
-      }
-      if ((s.hours[h] || 0) >= (task.hourlyMax || 8)) {
-        return { ok: false, reason: '已达本小时上限（' + s.hours[h] + '/' + task.hourlyMax + '），已自动停止' };
-      }
-      return { ok: true, stats: s };
+      return setStats(s).then(function () {
+        // 同步写入当天已发送记录（防重复核心）
+        var url = '';
+        try { url = location.href; } catch (e) { url = ''; }
+        return markSentToday(noteId, url).catch(function () { /* 忽略去重写入失败 */ }).then(function () { return s; });
+      });
     });
   }
 
   function alreadyCommented(noteId) {
     if (!noteId) return Promise.resolve(false);
-    return getStats().then(function (s) {
+    // 双重去重：24h评论记录 + 当天已发送记录（当天记录跨天自动清空）
+    return Promise.all([getStats(), getSentDaily()]).then(function (arr) {
+      var s = arr[0] || {};
+      var sent = arr[1] || {};
       var ts = s.commented && s.commented[noteId];
-      if (!ts) return false;
-      // 24h 内评论过则跳过
-      return (Date.now() - ts) < 24 * 3600 * 1000;
+      if (ts && (Date.now() - ts) < 24 * 3600 * 1000) return true;
+      if (sent.ids && sent.ids[noteId]) return true;
+      return false;
+    });
+  }
+
+  // 当天已发送记录：{ date, ids: { noteId: { ts, url } } }，跨天自动清空
+  function getSentDaily() {
+    return storageGet([SENT_KEY]).then(function (d) {
+      var s = d[SENT_KEY] || null;
+      if (!s || s.date !== todayStr() || !s.ids) {
+        return { date: todayStr(), ids: {} };
+      }
+      return s;
+    });
+  }
+
+  function setSentDaily(s) {
+    var o = {}; o[SENT_KEY] = s;
+    return storageSet(o);
+  }
+
+  function markSentToday(noteId, url) {
+    if (!noteId) return Promise.resolve(null);
+    return getSentDaily().then(function (s) {
+      if (s.date !== todayStr()) s = { date: todayStr(), ids: {} };
+      s.ids[noteId] = { ts: Date.now(), url: url || '' };
+      // 裁剪：最多保留 500 个，防止 storage 膨胀
+      var keys = Object.keys(s.ids);
+      if (keys.length > 500) {
+        keys.sort(function (a, b) { return s.ids[a].ts - s.ids[b].ts; });
+        for (var i = 0; i < keys.length - 500; i++) delete s.ids[keys[i]];
+      }
+      return setSentDaily(s);
     });
   }
 
@@ -425,6 +460,20 @@
       }
     } catch (e) { /* noop */ }
     return false;
+  }
+
+  // 零耗时防封：点击前补 2~3 次鼠标位移事件，轨迹更像真人（同步派发，不增加等待）
+  function jitterMouse() {
+    try {
+      var cx = Math.round(window.innerWidth / 2 + rand(-40, 40));
+      var cy = Math.round(window.innerHeight / 2 + rand(-40, 40));
+      for (var i = 0; i < 3; i++) {
+        document.dispatchEvent(new MouseEvent('mousemove', {
+          bubbles: true, cancelable: true,
+          clientX: cx + rand(-12, 12), clientY: cy + rand(-12, 12)
+        }));
+      }
+    } catch (e) { /* noop */ }
   }
 
   function safeClick(el) {
@@ -814,40 +863,75 @@
     return null;
   }
 
+  // 会话级文案指纹：同一次任务内不重复用同一条文案（零耗时，池子用完自动重置）
+  var sessionCommentHist = {};
+  var lastSuffix = '';
+
+  function pickFreshComment(comments) {
+    if (!comments || !comments.length) return undefined;
+    var fresh = [];
+    for (var i = 0; i < comments.length; i++) {
+      if (!sessionCommentHist[comments[i]]) fresh.push(comments[i]);
+    }
+    if (!fresh.length) {
+      sessionCommentHist = {};
+      fresh = comments.slice();
+    }
+    var c = pick(fresh);
+    if (c != null) sessionCommentHist[c] = 1;
+    return c;
+  }
+
   function diversifyComment(text) {
     if (!text) return text;
     // 30% 概率不加后缀，保持原样
     if (Math.random() < 0.3) return text;
-    var suf = pick(DIVERSIFY_SUFFIX) || '';
+    // 后缀不与上一条重样（防连续重复指纹），最多重试 5 次
+    var suf = '';
+    for (var t = 0; t < 5; t++) {
+      suf = pick(DIVERSIFY_SUFFIX) || '';
+      if (suf !== lastSuffix) break;
+    }
     // 避免重复叠加相同后缀
     if (suf && text.endsWith(suf)) return text;
+    if (suf) lastSuffix = suf;
     return text + suf;
   }
 
   // ---------- 拟人浏览（防封核心） ----------
   async function simulateBrowsing(task) {
+    // 点赞时机随机化（浏览前/浏览后，零新增耗时：只是把同一次点赞换个位置）
+    var likeFirst = Math.random() < 0.5;
+    async function maybeLike() {
+      try {
+        var rate = (task.likeRate == null) ? 30 : task.likeRate;
+        if (rate > 0 && rand(1, 100) <= rate) {
+          var likeBtn = findLikeButton();
+          if (likeBtn) {
+            jitterMouse();
+            safeClick(likeBtn);
+            await log('模拟真人行为：随机点赞 1 次');
+            await sleep(rand(800, 1500));
+            return true;
+          }
+        }
+      } catch (e) { /* 点赞失败不阻塞 */ }
+      return false;
+    }
     // 随机停留 2~6 秒
     await sleep(rand(2000, 6000));
-    // 随机滚动 2~4 次
+    if (likeFirst) await maybeLike();
+    // 随机滚动 2~4 次（方向随机抖动：偶尔上滑回看，更像真人）
     var rounds = rand(2, 4);
     for (var i = 0; i < rounds; i++) {
+      var dir = (Math.random() < 0.85) ? 1 : -1;
+      var dist = rand(200, 600) * dir;
       try {
-        window.scrollBy({ top: rand(200, 600), behavior: 'smooth' });
-      } catch (e) { window.scrollBy(0, rand(200, 600)); }
+        window.scrollBy({ top: dist, behavior: 'smooth' });
+      } catch (e) { window.scrollBy(0, dist); }
       await sleep(rand(600, 1500));
     }
-    // 随机点赞（默认 30%）
-    try {
-      var rate = (task.likeRate == null) ? 30 : task.likeRate;
-      if (rate > 0 && rand(1, 100) <= rate) {
-        var likeBtn = findLikeButton();
-        if (likeBtn) {
-          safeClick(likeBtn);
-          await log('模拟真人行为：随机点赞 1 次');
-          await sleep(rand(800, 1500));
-        }
-      }
-    } catch (e) { /* 点赞失败不阻塞 */ }
+    if (!likeFirst) await maybeLike();
     // 滚回评论区
     scrollToComments();
     await sleep(rand(500, 1200));
@@ -960,6 +1044,7 @@
       if (btn) {
         await sleep(rand(400, 900)); // 点发送前再顿一下，更像真人
         try { await log('准备点击发送：' + describeEl(btn)); } catch (e) { /* noop */ }
+        jitterMouse(); // 零耗时：点击前补 2~3 次鼠标位移事件，轨迹更像真人（不增加等待）
         safeClick(btn);
         try { await log('已点击发送，等待回执…'); } catch (e) { /* noop */ }
       } else {
@@ -972,6 +1057,7 @@
         clearEditor(editor);
         var cur = await getTask();
         await setTask({ currentIndex: (cur.currentIndex || 0) + 1, failStreak: (cur.failStreak || 0) + 1 });
+        await bumpCounter('fail');
         return false;
       }
 
@@ -1028,17 +1114,11 @@
         return 'halt';
       }
 
-      // 配额检查
-      var quota = await checkQuota(task);
-      if (!quota.ok) {
-        await halt(quota.reason);
-        return 'halt';
-      }
-
       var noteId = noteIdOf(location.pathname);
-      // 24h 去重
+      // 当天防重复：已发送过的帖子跳过
       if (await alreadyCommented(noteId)) {
-        await log('该笔记 24h 内已评论过，跳过');
+        await log('该笔记今天已发送过，跳过（当天防重复）');
+        await bumpCounter('skip');
         await setTask({ currentIndex: task.currentIndex + 1, failStreak: 0 });
         return 'skip';
       }
@@ -1047,6 +1127,7 @@
       var skipRate = (task.skipRate == null) ? 15 : task.skipRate;
       if (skipRate > 0 && rand(1, 100) <= skipRate) {
         await log('随机跳过第 ' + (task.currentIndex + 1) + ' 条（模拟真人挑选）');
+        await bumpCounter('skip');
         await setTask({ currentIndex: task.currentIndex + 1, failStreak: 0 });
         return 'skip';
       }
@@ -1070,6 +1151,7 @@
       if (!editor) {
         patch.failStreak = (task.failStreak || 0) + 1;
         await setTask(patch);
+        await bumpCounter('fail');
         await log('未找到评论输入框，跳过第 ' + (task.currentIndex + 1) + ' 条（连续失败 ' + patch.failStreak + ' 次）');
         if (patch.failStreak >= MAX_FAIL_STREAK) {
           await halt('连续 ' + MAX_FAIL_STREAK + ' 次找不到输入框，可能页面改版或被限流，已自动停止');
@@ -1078,7 +1160,7 @@
         return false;
       }
 
-      var raw = pick(task.comments) || DEFAULT_COMMENT;
+      var raw = pickFreshComment(task.comments) || DEFAULT_COMMENT;
       var text = task.diversify === false ? raw : diversifyComment(raw);
       var result = await doComment(editor, text);
 
@@ -1100,6 +1182,7 @@
       } else {
         patch.failStreak = (task.failStreak || 0) + 1;
         await setTask(patch);
+        await bumpCounter('fail');
         await log('评论失败：' + text + '（连续失败 ' + patch.failStreak + ' 次）');
         if (patch.failStreak >= MAX_FAIL_STREAK) {
           await halt('连续 ' + MAX_FAIL_STREAK + ' 次评论失败，可能被限流或需验证，已自动停止');
@@ -1117,8 +1200,9 @@
   // ---------- 主流程 ----------
   async function collectPostLinks(targetCount) {
     var seen = {};
-    // 先把已评论过的排除掉
+    // 先把已评论过的排除掉（24h记录 + 当天已发送记录双重过滤）
     var stats = await getStats().catch(function () { return { commented: {} }; });
+    var sentDaily = await getSentDaily().catch(function () { return { ids: {} }; });
     var links = [];
     var lastCount = -1;
 
@@ -1136,8 +1220,9 @@
         var id = noteIdOf(u.pathname);
         if (!id) continue; // 排除搜索页本身 /search_result/?keyword=...
         if (seen[id]) continue;
-        // 24h 内评论过去重
+        // 24h 内评论过去重 + 当天已发送去重
         if (stats.commented && stats.commented[id] && (Date.now() - stats.commented[id]) < 24 * 3600 * 1000) continue;
+        if (sentDaily.ids && sentDaily.ids[id]) continue;
         seen[id] = true;
         links.push(u.href); // 保留 xsec_token 等查询参数（无 token 的详情页会 404）
       }
@@ -1165,13 +1250,6 @@
       var task = await getTask();
       if (!task.running) return;
 
-      // 配额前置检查
-      var quota = await checkQuota(task);
-      if (!quota.ok) {
-        await halt(quota.reason);
-        return;
-      }
-
       if (task.doneCount >= (task.targetCount || 0)) {
         await setTask({ running: false });
         await log('已达目标数量，共评论 ' + task.doneCount + ' 条');
@@ -1190,7 +1268,9 @@
         if (isLoginWall()) { await halt('请先登录'); return; }
         var r = await commentCurrent(task);
         if (r === 'halt') return;
-        var gap = rand(task.minDelay || 30, task.maxDelay || 90);
+        var gapLo = (task.minDelay == null) ? 0 : task.minDelay;
+        var gapHi = (task.maxDelay == null) ? 20 : task.maxDelay;
+        var gap = rand(gapLo, gapHi);
         await log('等待 ' + gap + ' 秒后继续（防封间隔）…');
         await sleep(gap * 1000);
         continue; // 下一轮推进到下一篇
@@ -1265,6 +1345,222 @@
     }
   }
 
+  // ---------- 可拖动悬浮球（Chrome popup 本身不可拖动，此为页内替代） ----------
+  var floatRoot = null;
+  var floatBall = null;
+  var floatPanel = null;
+  var floatStatus = null;
+  var floatProg = null;
+  var floatStartBtn = null;
+  var floatStopBtn = null;
+
+  function getFloatPos() {
+    return storageGet([FLOAT_POS_KEY]).then(function (d) {
+      var p = d[FLOAT_POS_KEY] || null;
+      if (p && typeof p.left === 'number' && typeof p.top === 'number') return p;
+      return null;
+    });
+  }
+
+  function saveFloatPos(left, top) {
+    var o = {}; o[FLOAT_POS_KEY] = { left: left, top: top };
+    return storageSet(o);
+  }
+
+  function refreshFloatUI() {
+    if (!floatRoot) return;
+    getTask().then(function (task) {
+      var running = !!(task && task.running);
+      var done = (task && task.doneCount) || 0;
+      var total = (task && task.targetCount) || 0;
+      try {
+        if (floatBall) {
+          floatBall.textContent = running ? '停' : '评';
+          floatBall.style.background = running ? '#ff2442' : '#1f9d55';
+        }
+        if (floatStatus) floatStatus.textContent = running ? '运行中' : '空闲';
+        if (floatProg) floatProg.textContent = '进度 ' + done + '/' + total;
+        if (floatStartBtn) floatStartBtn.disabled = running;
+        if (floatStopBtn) floatStopBtn.disabled = !running;
+      } catch (e) { /* noop */ }
+    });
+    getSentDaily().then(function (s) {
+      try {
+        var n = Object.keys((s && s.ids) || {}).length;
+        var el = floatRoot && floatRoot.querySelector('[data-xhs-sent]');
+        if (el) el.textContent = '今日已发 ' + n + '（防重）';
+      } catch (e) { /* noop */ }
+    }).catch(function () { /* noop */ });
+  }
+
+  function createFloatBall() {
+    if (floatRoot || !document.body) return;
+    try {
+      var root = document.createElement('div');
+      root.id = '__xhs_float_root__';
+      root.setAttribute('data-xhs-float', '1');
+      root.style.cssText = 'position:fixed;z-index:2147483647;left:auto;top:200px;right:16px;font-family:inherit;user-select:none;';
+
+      var ball = document.createElement('div');
+      ball.id = '__xhs_float_ball__';
+      ball.title = '拖动移动，点击展开/收起';
+      ball.style.cssText = 'width:44px;height:44px;border-radius:50%;background:#1f9d55;color:#fff;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:move;box-shadow:0 2px 10px rgba(0,0,0,.25);';
+      ball.textContent = '评';
+
+      var panel = document.createElement('div');
+      panel.id = '__xhs_float_panel__';
+      panel.style.cssText = 'display:none;margin-top:8px;width:190px;background:#fff;border:1px solid #e3e5e8;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.18);padding:8px;font-size:12px;color:#1f1f1f;';
+
+      var title = document.createElement('div');
+      title.textContent = '小红书自动评论';
+      title.style.cssText = 'font-weight:600;margin-bottom:4px;cursor:move;';
+      title.setAttribute('data-xhs-drag', '1');
+
+      var status = document.createElement('div');
+      status.textContent = '空闲';
+      status.style.cssText = 'color:#8a8f99;margin-bottom:2px;';
+
+      var prog = document.createElement('div');
+      prog.textContent = '进度 0/0';
+      prog.style.cssText = 'margin-bottom:2px;';
+
+      var sent = document.createElement('div');
+      sent.setAttribute('data-xhs-sent', '1');
+      sent.textContent = '今日已发 0（防重）';
+      sent.style.cssText = 'color:#8a8f99;margin-bottom:6px;';
+
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:6px;';
+
+      var startBtn = document.createElement('button');
+      startBtn.textContent = '开始';
+      startBtn.style.cssText = 'flex:1;padding:5px 0;border:none;border-radius:6px;background:#ff2442;color:#fff;cursor:pointer;';
+      startBtn.onclick = function () { startTask({}); setTimeout(refreshFloatUI, 500); };
+
+      var stopBtn = document.createElement('button');
+      stopBtn.textContent = '停止';
+      stopBtn.style.cssText = 'flex:1;padding:5px 0;border:none;border-radius:6px;background:#6b7280;color:#fff;cursor:pointer;';
+      stopBtn.onclick = function () { stopTask(); setTimeout(refreshFloatUI, 500); };
+
+      row.appendChild(startBtn);
+      row.appendChild(stopBtn);
+      panel.appendChild(title);
+      panel.appendChild(status);
+      panel.appendChild(prog);
+      panel.appendChild(sent);
+      panel.appendChild(row);
+      root.appendChild(ball);
+      root.appendChild(panel);
+      document.body.appendChild(root);
+
+      floatRoot = root;
+      floatBall = ball;
+      floatPanel = panel;
+      floatStatus = status;
+      floatProg = prog;
+      floatStartBtn = startBtn;
+      floatStopBtn = stopBtn;
+
+      // 恢复上次位置
+      getFloatPos().then(function (p) {
+        if (!p || !floatRoot) return;
+        try {
+          var maxL = Math.max(0, window.innerWidth - 70);
+          var maxT = Math.max(0, window.innerHeight - 70);
+          var l = Math.min(Math.max(0, p.left), maxL);
+          var t = Math.min(Math.max(0, p.top), maxT);
+          floatRoot.style.left = l + 'px';
+          floatRoot.style.top = t + 'px';
+          floatRoot.style.right = 'auto';
+        } catch (e) { /* noop */ }
+      });
+
+      // 拖动：按住球或标题移动；移动<5px 视为点击（展开/收起）
+      (function bindDrag(handle) {
+        var sx = 0, sy = 0, ox = 0, oy = 0, dragging = false, moved = 0;
+        function onDown(e) {
+          var pt = (e.touches && e.touches[0]) || e;
+          dragging = true; moved = 0;
+          sx = pt.clientX; sy = pt.clientY;
+          var r = floatRoot.getBoundingClientRect();
+          ox = r.left; oy = r.top;
+          e.preventDefault();
+        }
+        function onMove(e) {
+          if (!dragging) return;
+          var pt = (e.touches && e.touches[0]) || e;
+          var dx = pt.clientX - sx, dy = pt.clientY - sy;
+          moved = Math.max(moved, Math.abs(dx) + Math.abs(dy));
+          var nl = Math.min(Math.max(0, ox + dx), Math.max(0, window.innerWidth - 70));
+          var nt = Math.min(Math.max(0, oy + dy), Math.max(0, window.innerHeight - 70));
+          floatRoot.style.left = nl + 'px';
+          floatRoot.style.top = nt + 'px';
+          floatRoot.style.right = 'auto';
+        }
+        function onUp() {
+          if (!dragging) return;
+          dragging = false;
+          try {
+            var r = floatRoot.getBoundingClientRect();
+            saveFloatPos(Math.round(r.left), Math.round(r.top));
+          } catch (e) { /* noop */ }
+          if (moved < 5) {
+            try { floatPanel.style.display = (floatPanel.style.display === 'none') ? 'block' : 'none'; } catch (e) { /* noop */ }
+          }
+        }
+        try {
+          handle.addEventListener('mousedown', onDown);
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+          handle.addEventListener('touchstart', onDown, { passive: false });
+          document.addEventListener('touchmove', onMove, { passive: false });
+          document.addEventListener('touchend', onUp);
+        } catch (e) { /* noop */ }
+      })(ball);
+      (function bindTitleDrag(handle) {
+        var sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+        function onDown(e) {
+          dragging = true;
+          sx = e.clientX; sy = e.clientY;
+          var r = floatRoot.getBoundingClientRect();
+          ox = r.left; oy = r.top;
+          e.preventDefault();
+        }
+        function onMove(e) {
+          if (!dragging) return;
+          var nl = Math.min(Math.max(0, ox + e.clientX - sx), Math.max(0, window.innerWidth - 70));
+          var nt = Math.min(Math.max(0, oy + e.clientY - sy), Math.max(0, window.innerHeight - 70));
+          floatRoot.style.left = nl + 'px';
+          floatRoot.style.top = nt + 'px';
+          floatRoot.style.right = 'auto';
+        }
+        function onUp() {
+          if (!dragging) return;
+          dragging = false;
+          try {
+            var r = floatRoot.getBoundingClientRect();
+            saveFloatPos(Math.round(r.left), Math.round(r.top));
+          } catch (e) { /* noop */ }
+        }
+        try {
+          handle.addEventListener('mousedown', onDown);
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        } catch (e) { /* noop */ }
+      })(title);
+
+      // 任务变化时刷新悬浮球（含日志写入触发的 storage 变更）
+      try {
+        chrome.storage.onChanged.addListener(function (changes, area) {
+          if (area !== 'local') return;
+          if (changes[TASK_KEY] || changes[SENT_KEY]) refreshFloatUI();
+        });
+      } catch (e) { /* noop */ }
+      try { setInterval(refreshFloatUI, 2000); } catch (e) { /* noop */ }
+      refreshFloatUI();
+    } catch (e) { /* 悬浮球创建失败不阻塞主流程 */ }
+  }
+
   // ---------- 任务控制 ----------
   async function startTask(partial) {
     // 以存储中的任务为基准合并，避免 popup 先写存储、消息无 payload 时清空关键词/评论
@@ -1277,10 +1573,10 @@
       doneCount: 0,
       failStreak: 0
     });
-    if (task.minDelay == null) task.minDelay = 30;
-    if (task.maxDelay == null) task.maxDelay = 90;
-    if (task.minDelay < 3) task.minDelay = 3;
-    if (task.maxDelay < 3) task.maxDelay = 3;
+    if (task.minDelay == null) task.minDelay = 0;
+    if (task.maxDelay == null) task.maxDelay = 20;
+    if (task.minDelay < 0) task.minDelay = 0;
+    if (task.maxDelay < 0) task.maxDelay = 0;
     if (task.maxDelay < task.minDelay) task.maxDelay = task.minDelay;
     if (!task.targetCount) task.targetCount = 5;
     if (!Array.isArray(task.comments)) task.comments = [];
@@ -1293,7 +1589,7 @@
 
     var o = {}; o[TASK_KEY] = task;
     await storageSet(o);
-    await log('任务开始，关键词：' + task.keyword + '（防封：' + task.minDelay + '~' + task.maxDelay + 's/条，每日≤' + (task.dailyMax || 20) + '）');
+    await log('任务开始，关键词：' + task.keyword + '（间隔 ' + task.minDelay + '~' + task.maxDelay + 's/条）');
     run();
   }
 
@@ -1332,9 +1628,10 @@
   // ---------- 启动 ----------
   (async function boot() {
     setupListeners();
-    try { console.info('[xhs-auto] content.js v20260914-fix2 已注入'); } catch (e) { /* noop */ }
-    try { window.__XHS_CONTENT_VER = 'v20260914-fix2'; } catch (e) { /* noop */ }
+    try { console.info('[xhs-auto] content.js v20260914-eff1 已注入'); } catch (e) { /* noop */ }
+    try { window.__XHS_CONTENT_VER = 'v20260914-eff1'; } catch (e) { /* noop */ }
     await domReady();
+    try { createFloatBall(); } catch (e) { /* noop */ }
     // 首屏多等一下，让小红书 SPA 渲染评论区
     await sleep(800);
     var task = await getTask();

@@ -31,50 +31,18 @@
         </div>
         <div class="col">
           <label for="minDelay">最小延迟（秒）</label>
-          <input id="minDelay" type="number" min="3" step="1" value="30">
+          <input id="minDelay" type="number" min="0" step="1" value="0">
         </div>
         <div class="col">
           <label for="maxDelay">最大延迟（秒）</label>
-          <input id="maxDelay" type="number" min="3" step="1" value="90">
+          <input id="maxDelay" type="number" min="0" step="1" value="20">
         </div>
       </div>
 
-      <fieldset class="guard">
-        <legend>防封号策略</legend>
-        <div class="field row">
-          <div class="col">
-            <label for="dailyMax">每日上限</label>
-            <input id="dailyMax" type="number" min="1" max="50" step="1" value="20">
-          </div>
-          <div class="col">
-            <label for="hourlyMax">每小时上限</label>
-            <input id="hourlyMax" type="number" min="1" max="20" step="1" value="8">
-          </div>
-          <div class="col">
-            <label for="skipRate">随机跳过%</label>
-            <input id="skipRate" type="number" min="0" max="50" step="1" value="15">
-          </div>
-        </div>
-        <div class="field row">
-          <div class="col">
-            <label for="restEvery">每N条休息</label>
-            <input id="restEvery" type="number" min="0" max="20" step="1" value="5">
-          </div>
-          <div class="col">
-            <label for="restMin">休息下限(秒)</label>
-            <input id="restMin" type="number" min="30" step="1" value="60">
-          </div>
-          <div class="col">
-            <label for="restMax">休息上限(秒)</label>
-            <input id="restMax" type="number" min="30" step="1" value="180">
-          </div>
-        </div>
-        <div class="field checks">
-          <label class="check"><input id="likeRate" type="checkbox" checked> 随机点赞模拟真人</label>
-          <label class="check"><input id="diversify" type="checkbox" checked> 评论多样化防重复</label>
-        </div>
-        <div class="hint">间隔建议≥20秒防封（已放开下限到3秒，自行承担风控风险）、限量、随机跳过/休息，遇到验证码自动暂停。</div>
-      </fieldset>
+      <div class="dedup">
+        <div class="hint" id="sentTodayText">今日已发送：0 篇（自动去重中）</div>
+        <button id="clearSentBtn" class="btn btn-danger" type="button" style="flex:0 0 auto;padding:4px 10px;font-size:12px;">清空今日记录</button>
+      </div>
 
       <div class="actions">
         <button id="startBtn" class="btn btn-primary" type="button">开始自动任务</button>

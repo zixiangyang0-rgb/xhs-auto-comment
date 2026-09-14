@@ -7,11 +7,9 @@ const DEFAULT_TASK = {
   keyword: '',
   comments: [],
   targetCount: 5,
-  // 防封号默认：间隔拉大到 30~90 秒
-  minDelay: 30,
-  maxDelay: 90,
-  dailyMax: 20,
-  hourlyMax: 8,
+  // 效率优先默认：间隔 0~20 秒（风险自负）；每日/每小时上限已移除，只计数不熔断
+  minDelay: 0,
+  maxDelay: 20,
   restEvery: 5,      // 每评论 N 条休息一次（0 = 不休息）
   restMin: 60,       // 休息下限（秒）
   restMax: 180,      // 休息上限（秒）

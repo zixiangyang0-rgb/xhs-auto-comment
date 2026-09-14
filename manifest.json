@@ -7,7 +7,17 @@
   "host_permissions": ["https://www.xiaohongshu.com/*"],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "小红书自动评论"
+    "default_title": "小红书自动评论",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "content_scripts": [
     {

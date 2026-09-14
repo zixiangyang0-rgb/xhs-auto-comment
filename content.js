@@ -4,19 +4,16 @@
  *
  * 状态机由 chrome.storage.local 的 xhs_auto_task 驱动：
  *   { running, keyword, comments[], targetCount, minDelay, maxDelay,
- *     restEvery, restMin, restMax, skipRate, likeRate,
- *     diversify, doneCount, queue[], currentIndex, failStreak, logs[] }
+ *     skipRate, likeRate, diversify,
+ *     doneCount, queue[], currentIndex, refillCount, failStreak, logs[] }
  *
- * 防封号策略：
-  *   1) 间隔（默认 0~20s，下限 0，效率优先风险自负）+ 每条随机抖动
- *   2) 每日/每小时上限熔断
- *   3) 每 N 条长休息
- *   4) 随机跳过（模拟真人挑选）
- *   5) 进详情后模拟浏览：随机滚动 + 停留 + 随机点赞
- *   6) 评论多样化：随机后缀避免重复文案
- *   7) 24h 内已评论过的笔记跳过
- *   8) 验证码/限流/风控文案检测 → 自动暂停
- *   9) 连续失败 3 次熔断
+ * 防封号策略（均为零耗时，不加等待）：
+ *   1) 间隔（默认 0~10s，下限 0，效率优先风险自负）+ 每条随机抖动
+ *   2) 会话文案指纹去重 + 后缀池不重样
+ *   3) 点击前鼠标抖动 + 点赞/滚动顺序随机
+ *   4) 随机跳过（模拟真人挑选）+ 当天已发送去重（跳过不占发帖名额，自动补采）
+ *   5) 验证码/限流/风控文案检测 → 自动暂停
+ *   6) 连续失败 3 次熔断
  */
 
 (function () {
@@ -176,16 +173,14 @@
       comments: [],
       targetCount: 5,
       minDelay: 0,
-      maxDelay: 20,
-      restEvery: 5,
-      restMin: 60,
-      restMax: 180,
+      maxDelay: 10,
       skipRate: 15,
       likeRate: 30,
       diversify: true,
       doneCount: 0,
       queue: [],
       currentIndex: 0,
+      refillCount: 0,
       failStreak: 0,
       logs: []
     };
@@ -1171,13 +1166,6 @@
         await setTask(patch);
         await bumpStats(noteId);
         await log('评论成功：' + text + '（' + patch.doneCount + '/' + (task.targetCount || task.queue.length) + '）');
-        // 每 N 条长休息
-        var every = task.restEvery || 0;
-        if (every > 0 && patch.doneCount > 0 && patch.doneCount % every === 0) {
-          var rs = rand(task.restMin || 60, task.restMax || 180);
-          await log('防封休息 ' + rs + ' 秒（已评论 ' + patch.doneCount + ' 条）…');
-          await sleep(rs * 1000);
-        }
         return true;
       } else {
         patch.failStreak = (task.failStreak || 0) + 1;
@@ -1257,8 +1245,17 @@
       }
 
       if (task.currentIndex >= task.queue.length) {
+        // 跳过不计入发帖名额：队列耗尽但成功数未达标时，回搜索页补充收集（自动排除已发送）
+        var need = (task.targetCount || 0) - (task.doneCount || 0);
+        var refills = task.refillCount || 0;
+        if (need > 0 && task.keyword && refills < 3) {
+          await log('本轮已处理完，成功 ' + task.doneCount + '/' + task.targetCount + '（跳过不占名额），回搜索页第 ' + (refills + 1) + ' 次补充收集…');
+          await setTask({ queue: [], currentIndex: 0, refillCount: refills + 1 });
+          location.href = searchUrl(task.keyword);
+          return;
+        }
         await setTask({ running: false });
-        await log('队列全部处理完成，共评论 ' + task.doneCount + ' 条');
+        await log('任务结束，共成功评论 ' + task.doneCount + ' 条' + (need > 0 ? '（剩余 ' + need + ' 条无新笔记可发）' : ''));
         return;
       }
 
@@ -1269,7 +1266,7 @@
         var r = await commentCurrent(task);
         if (r === 'halt') return;
         var gapLo = (task.minDelay == null) ? 0 : task.minDelay;
-        var gapHi = (task.maxDelay == null) ? 20 : task.maxDelay;
+        var gapHi = (task.maxDelay == null) ? 10 : task.maxDelay;
         var gap = rand(gapLo, gapHi);
         await log('等待 ' + gap + ' 秒后继续（防封间隔）…');
         await sleep(gap * 1000);
@@ -1306,7 +1303,8 @@
         await halt('未找到任何笔记（可能无结果或 24h 内已评论过），已停止');
         return;
       }
-      await setTask({ queue: links, currentIndex: 0, doneCount: 0, failStreak: 0 });
+      // 注意：补充收集时不能重置 doneCount（成功数要累计，跳过不占名额）
+      await setTask({ queue: links, currentIndex: 0, failStreak: 0 });
       await log('已收集 ' + links.length + ' 条笔记（已自动去重）');
     }
 
@@ -1571,10 +1569,11 @@
       queue: [],
       currentIndex: 0,
       doneCount: 0,
+      refillCount: 0,
       failStreak: 0
     });
     if (task.minDelay == null) task.minDelay = 0;
-    if (task.maxDelay == null) task.maxDelay = 20;
+    if (task.maxDelay == null) task.maxDelay = 10;
     if (task.minDelay < 0) task.minDelay = 0;
     if (task.maxDelay < 0) task.maxDelay = 0;
     if (task.maxDelay < task.minDelay) task.maxDelay = task.minDelay;

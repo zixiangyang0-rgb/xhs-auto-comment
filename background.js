@@ -7,12 +7,9 @@ const DEFAULT_TASK = {
   keyword: '',
   comments: [],
   targetCount: 5,
-  // 效率优先默认：间隔 0~20 秒（风险自负）；每日/每小时上限已移除，只计数不熔断
+  // 效率优先默认：间隔 0~10 秒（风险自负）；每日/每小时上限已移除，只计数不熔断
   minDelay: 0,
-  maxDelay: 20,
-  restEvery: 5,      // 每评论 N 条休息一次（0 = 不休息）
-  restMin: 60,       // 休息下限（秒）
-  restMax: 180,      // 休息上限（秒）
+  maxDelay: 10,
   skipRate: 15,      // 随机跳过率（百分比 0~50）
   likeRate: 30,      // 随机点赞率（百分比 0~100，模拟真人）
   diversify: true,   // 评论多样化（随机后缀防重复）

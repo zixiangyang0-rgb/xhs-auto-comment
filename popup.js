@@ -8,12 +8,9 @@ var SENT_KEY = 'xhs_sent_daily';
 var POLL_INTERVAL = 1000; // 轮询间隔（毫秒）
 var XHS_HOST = 'www.xiaohongshu.com';
 
-// 固定策略（UI选项框已删除）：随机跳过15%，每5条休息60~180s，点赞+多样化常开；每日/每小时上限已移除
+// 固定策略（UI选项框已删除）：随机跳过15%，点赞+多样化常开；每日/每小时上限、长休息已移除
 var FIXED_GUARD = {
   skipRate: 15,
-  restEvery: 5,
-  restMin: 60,
-  restMax: 180,
   likeRate: 30,
   diversify: true
 };
@@ -193,15 +190,12 @@ function onStart() {
   var targetCount = toInt(elTargetCount.value, 5, 1, 30);
   // 效率优先：最小延迟下限为 0（风险自负）
   var minDelay = toInt(elMinDelay.value, 0, 0, 3600);
-  var maxDelay = toInt(elMaxDelay.value, 20, 0, 3600);
+  var maxDelay = toInt(elMaxDelay.value, 10, 0, 3600);
   if (maxDelay < minDelay) {
     maxDelay = minDelay;
   }
-  // 固定策略（选项框已删除，不再从表单读取；每日/每小时上限已移除）
+  // 固定策略（选项框已删除，不再从表单读取；每日/每小时上限、长休息已移除）
   var skipRate = FIXED_GUARD.skipRate;
-  var restEvery = FIXED_GUARD.restEvery;
-  var restMin = FIXED_GUARD.restMin;
-  var restMax = FIXED_GUARD.restMax;
   var likeOn = true;
   var diversifyOn = true;
 
@@ -219,14 +213,12 @@ function onStart() {
     minDelay: minDelay,
     maxDelay: maxDelay,
     skipRate: skipRate,
-    restEvery: restEvery,
-    restMin: restMin,
-    restMax: restMax,
     likeRate: likeOn ? 30 : 0,
     diversify: diversifyOn,
     doneCount: 0,
     queue: [],
     currentIndex: 0,
+    refillCount: 0,
     failStreak: 0,
     logs: ['任务已创建：关键词「' + keyword + '」，目标 ' + targetCount + ' 篇（间隔 ' + minDelay + '~' + maxDelay + 's/条）']
   };

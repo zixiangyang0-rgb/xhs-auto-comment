@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小红书自动评论</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>小红书自动评论</h1>
+      <span id="statusBadge" class="badge badge-idle">空闲</span>
+    </header>
+
+    <main class="form">
+      <div class="field">
+        <label for="keyword">搜索关键词</label>
+        <input id="keyword" type="text" placeholder="例如：护肤" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label for="comments">评论内容<span class="hint">（每行一条，随机选取）</span></label>
+        <textarea id="comments" rows="5" placeholder="第一行评论&#10;第二行评论&#10;第三行评论"></textarea>
+      </div>
+
+      <div class="field row">
+        <div class="col">
+          <label for="targetCount">帖子数量</label>
+          <input id="targetCount" type="number" min="1" max="30" step="1" value="5">
+        </div>
+        <div class="col">
+          <label for="minDelay">最小延迟（秒）</label>
+          <input id="minDelay" type="number" min="3" step="1" value="30">
+        </div>
+        <div class="col">
+          <label for="maxDelay">最大延迟（秒）</label>
+          <input id="maxDelay" type="number" min="3" step="1" value="90">
+        </div>
+      </div>
+
+      <fieldset class="guard">
+        <legend>防封号策略</legend>
+        <div class="field row">
+          <div class="col">
+            <label for="dailyMax">每日上限</label>
+            <input id="dailyMax" type="number" min="1" max="50" step="1" value="20">
+          </div>
+          <div class="col">
+            <label for="hourlyMax">每小时上限</label>
+            <input id="hourlyMax" type="number" min="1" max="20" step="1" value="8">
+          </div>
+          <div class="col">
+            <label for="skipRate">随机跳过%</label>
+            <input id="skipRate" type="number" min="0" max="50" step="1" value="15">
+          </div>
+        </div>
+        <div class="field row">
+          <div class="col">
+            <label for="restEvery">每N条休息</label>
+            <input id="restEvery" type="number" min="0" max="20" step="1" value="5">
+          </div>
+          <div class="col">
+            <label for="restMin">休息下限(秒)</label>
+            <input id="restMin" type="number" min="30" step="1" value="60">
+          </div>
+          <div class="col">
+            <label for="restMax">休息上限(秒)</label>
+            <input id="restMax" type="number" min="30" step="1" value="180">
+          </div>
+        </div>
+        <div class="field checks">
+          <label class="check"><input id="likeRate" type="checkbox" checked> 随机点赞模拟真人</label>
+          <label class="check"><input id="diversify" type="checkbox" checked> 评论多样化防重复</label>
+        </div>
+        <div class="hint">间隔建议≥20秒防封（已放开下限到3秒，自行承担风控风险）、限量、随机跳过/休息，遇到验证码自动暂停。</div>
+      </fieldset>
+
+      <div class="actions">
+        <button id="startBtn" class="btn btn-primary" type="button">开始自动任务</button>
+        <button id="stopBtn" class="btn btn-danger" type="button" disabled>停止</button>
+      </div>
+
+      <div class="progress">
+        <div class="progress-text" id="progressText">进度：0 / 0</div>
+        <div class="progress-bar">
+          <div class="progress-bar-fill" id="progressFill"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>运行日志</label>
+        <div id="logArea" class="log-area" aria-live="polite"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

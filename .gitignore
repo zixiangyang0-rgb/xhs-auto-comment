@@ -1,0 +1,13 @@
+# 测试截图（本地存证，不入库）
+真机实测-*.png
+*.log
+
+# 本地 Agent 会话 / 工具链 / 索引缓存
+.opencode/
+.omo/
+.codegraph/
+node_modules/
+
+# 系统文件
+.DS_Store
+Thumbs.db

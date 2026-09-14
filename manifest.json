@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "xhs-auto-comment",
+  "version": "1.1.0",
+  "description": "小红书关键词搜索 + 自动评论助手（带防封号策略）",
+  "permissions": ["storage", "activeTab", "tabs", "scripting", "alarms"],
+  "host_permissions": ["https://www.xiaohongshu.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "小红书自动评论"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
